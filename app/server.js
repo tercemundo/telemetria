@@ -1,0 +1,71 @@
+const express = require('express');
+const client = require('prom-client');
+const disk = require('diskusage');
+const os = require('os');
+
+const app = express();
+const register = client.register;
+
+// Default metrics (process, cpu, memory) - optional
+client.collectDefaultMetrics({ register });
+
+// Custom metrics
+const httpRequestDuration = new client.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'Duration of HTTP requests in seconds',
+  labelNames: ['method', 'route', 'code'],
+  buckets: [0.005, 0.01, 0.05, 0.1, 0.3, 0.5, 1, 2, 5]
+});
+
+const httpRequestsTotal = new client.Counter({
+  name: 'http_requests_total',
+  help: 'Total number of HTTP requests',
+  labelNames: ['method', 'route', 'code']
+});
+
+// Disk usage metrics
+const diskUsedGauge = new client.Gauge({
+  name: 'disk_used_bytes',
+  help: 'Disk space used in bytes'
+});
+
+const diskTotalGauge = new client.Gauge({
+  name: 'disk_total_bytes',
+  help: 'Total disk space in bytes'
+});
+
+const path = os.platform() === 'win32' ? 'c:' : '/';
+
+async function updateDiskMetrics() {
+  try {
+    const info = await disk.check(path);
+    diskTotalGauge.set(info.total);
+    diskUsedGauge.set(info.total - info.free);
+  } catch(e) {
+    console.error('Error obteniendo métricas de disco:', e);
+  }
+}
+
+setInterval(updateDiskMetrics, 10000); // actualizar cada 10 segundos
+updateDiskMetrics();
+
+app.get('/', async (req, res) => {
+  const end = httpRequestDuration.startTimer();
+  // Simulate variable processing time
+  const delay = Math.random() * 300;
+  await new Promise(r => setTimeout(r, delay));
+  res.json({ ok: true, delay: Math.round(delay) });
+  end({ method: req.method, route: '/', code: 200 });
+  httpRequestsTotal.inc({ method: req.method, route: '/', code: 200 });
+});
+
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Telemetry sample app listening on ${port}`);
+});
+
